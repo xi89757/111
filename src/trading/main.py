@@ -8,14 +8,14 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from .analysis.llm import decide, screen_markets
-from .config import settings
-from .data.news import fetch_rss_all
-from .exchanges.polymarket import PolymarketClient
-from .execution.paper import PaperBroker
-from .logging_setup import configure_logging, get_logger
-from .portfolio.tracker import PortfolioState
-from .risk.kelly import position_size_usd
+from trading.analysis.llm import decide, screen_markets
+from trading.config import settings
+from trading.data.news import fetch_rss_all
+from trading.exchanges.polymarket import PolymarketClient
+from trading.execution.paper import PaperBroker
+from trading.logging_setup import configure_logging, get_logger
+from trading.portfolio.tracker import PortfolioState
+from trading.risk.kelly import position_size_usd
 
 console = Console()
 log = get_logger(__name__)
