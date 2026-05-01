@@ -40,8 +40,8 @@ async def screen_markets(markets: list[dict], news_titles: list[str]) -> list[st
         "You screen prediction markets for trading opportunities. "
         "Return ONLY a JSON array of market_id strings that look most likely "
         "to be mispriced given recent news. Pick at most 5.\n\n"
-        f"Recent news headlines:\n- " + "\n- ".join(news_titles[:30]) + "\n\n"
-        f"Markets (id, question, current_yes_price):\n"
+        "Recent news headlines:\n- " + "\n- ".join(news_titles[:30]) + "\n\n"
+        "Markets (id, question, current_yes_price):\n"
         + "\n".join(f"- {m['market_id']} | {m['question']} | yes={m['yes_price']:.2f}" for m in markets)
     )
     resp = await client().messages.create(

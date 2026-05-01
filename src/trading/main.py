@@ -150,9 +150,13 @@ async def cmd_status() -> None:
         await poly.close()
 
     table = Table(title="Paper portfolio")
-    table.add_column("market"); table.add_column("side"); table.add_column("shares", justify="right")
-    table.add_column("avg", justify="right"); table.add_column("now", justify="right")
-    table.add_column("mtm", justify="right"); table.add_column("pnl", justify="right")
+    table.add_column("market")
+    table.add_column("side")
+    table.add_column("shares", justify="right")
+    table.add_column("avg", justify="right")
+    table.add_column("now", justify="right")
+    table.add_column("mtm", justify="right")
+    table.add_column("pnl", justify="right")
     for mid, p in state.positions.items():
         cur = prices.get(mid, p.avg_price)
         mtm = p.mark_to_market(cur)
