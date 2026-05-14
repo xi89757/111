@@ -25,6 +25,7 @@ pipeline/
   report.py      # table (md/csv) + matplotlib chart
   run.py         # CLI: python -m pipeline.run <image>
   watch.py       # CLI: python -m pipeline.watch <folder>
+  combined.py    # CLI: multi-day combined table + line chart
 data/
   benchmarks.json   # cached index closes keyed by ts_code -> YYYYMMDD -> close
   records.csv       # appended history (rows for the same date are replaced on re-run)
@@ -43,6 +44,10 @@ python -m pipeline.run samples/20260410.png
 
 # watch a folder; each new image is processed automatically
 python -m pipeline.watch samples/
+
+# multi-day combined report (table + line chart vs benchmarks)
+python -m pipeline.combined --range 2026-04-13 2026-04-17
+python -m pipeline.combined 20260413 20260414 20260415 20260416 20260417
 
 # refresh benchmark closes (otherwise falls back to data/benchmarks.json)
 export TUSHARE_TOKEN=...
