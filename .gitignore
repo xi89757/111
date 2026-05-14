@@ -1,0 +1,9 @@
+# Generated artifacts — refreshed every time an image is processed
+data/nav_history.csv
+data/benchmark.csv
+output/
+
+# Python
+__pycache__/
+*.pyc
+.venv/

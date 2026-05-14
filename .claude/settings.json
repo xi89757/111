@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/user/111/.claude/hooks/nav_auto_detect.py"
+          }
+        ]
+      }
+    ]
+  }
+}
