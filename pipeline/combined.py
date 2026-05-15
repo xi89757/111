@@ -227,7 +227,7 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
     _product_rows(ws, ytd_frac, "0.00%")
     _finalize(ws)
 
-    # Sheet 3: daily change + CSI 300 / CSI 500 daily + 锐进1号 excess
+    # Sheet 3: daily change + CSI 300 / CSI 500 daily + 领航1号 excess
     ws = wb.create_sheet("单日单位净值变动")
     _header(ws)
     daily_frac = {n: {d: (v / 100.0 if v is not None else None)
@@ -253,14 +253,14 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
             c.alignment = right
             c.border = border
 
-    # 锐进1号 - CSI 500 excess return (daily)
+    # 领航1号 - CSI 500 excess return (daily)
     excess_row = base_row + 2
-    nc = ws.cell(row=excess_row, column=1, value="锐进1号 - 中证500 超额")
+    nc = ws.cell(row=excess_row, column=1, value="领航1号 - 中证500 超额")
     nc.font = excess_font
     nc.fill = excess_fill
     nc.alignment = center
     nc.border = border
-    rj_daily = daily.get("锐进1号", {})
+    rj_daily = daily.get("领航1号", {})
     for j, d in enumerate(dates, start=2):
         rj = rj_daily.get(d)
         b = bench_daily["CSI500"].get(d)
@@ -278,7 +278,7 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
 
 def _build_daily_chart(out_path: Path, extractions: list[Extraction],
                        product_order: list[str]) -> None:
-    """Daily % change: every product + CSI 300 + CSI 500 + 锐进1号 excess."""
+    """Daily % change: every product + CSI 300 + CSI 500 + 领航1号 excess."""
     _setup_chinese_font()
 
     dates = [e.date for e in extractions]
@@ -311,7 +311,7 @@ def _build_daily_chart(out_path: Path, extractions: list[Extraction],
             linestyle=":", marker="^", markersize=marker_size,
             linewidth=2.2, color="#d97706", label="中证500 (单日)")
 
-    rj = daily.get("锐进1号", {})
+    rj = daily.get("领航1号", {})
     excess = [
         (rj.get(d) - bench_daily["CSI500"].get(d))
         if (rj.get(d) is not None and bench_daily["CSI500"].get(d) is not None)
@@ -320,7 +320,7 @@ def _build_daily_chart(out_path: Path, extractions: list[Extraction],
     ]
     ax.plot(xs, excess, linestyle="-", marker="D", markersize=marker_size + 1,
             linewidth=2.4, color="#9C0006",
-            label="锐进1号 - 中证500 超额")
+            label="领航1号 - 中证500 超额")
 
     ax.set_xticks(xs)
     ax.set_xticklabels(short_labels, rotation=45, ha="right",
