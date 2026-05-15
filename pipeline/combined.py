@@ -52,6 +52,19 @@ def _bench_daily_pct(dates_iso: list[str]) -> dict[str, dict[str, float]]:
     return out
 
 
+def _bench_close(dates_iso: list[str]) -> dict[str, dict[str, float]]:
+    """For each ISO date, the raw closing index point for CSI 300 / CSI 500."""
+    cache = _load_bench_cache()
+    out: dict[str, dict[str, float]] = {"CSI300": {}, "CSI500": {}}
+    for key in ("CSI300", "CSI500"):
+        series = cache.get(INDEX_CODES[key], {})
+        for d_iso in dates_iso:
+            d = d_iso.replace("-", "")
+            if d in series:
+                out[key][d_iso] = series[d]
+    return out
+
+
 def _load_sidecar(samples_dir: Path, yyyymmdd: str) -> Extraction:
     path = samples_dir / f"{yyyymmdd}.json"
     if not path.exists():
@@ -213,10 +226,52 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
             ws.column_dimensions[get_column_letter(j)].width = 12
         ws.freeze_panes = "B2"
 
-    # Sheet 1: NAV
+    bench_close = _bench_close(dates)
+
+    # Sheet 1: NAV + CSI 300 / CSI 500 closing points + 领航1号 cumulative excess
     ws = wb.create_sheet("基金单位净值")
     _header(ws)
     _product_rows(ws, nav, "0.0000")
+
+    nav_base = len(product_order) + 2
+    for offset, (key, label) in enumerate((("CSI300", "沪深300"),
+                                           ("CSI500", "中证500"))):
+        r = nav_base + offset
+        nc = ws.cell(row=r, column=1, value=f"{label} (收盘点位)")
+        nc.font = bench_font
+        nc.fill = bench_fill
+        nc.alignment = center
+        nc.border = border
+        for j, d in enumerate(dates, start=2):
+            v = bench_close[key].get(d)
+            c = ws.cell(row=r, column=j, value=v)
+            c.number_format = "0.00"
+            c.fill = bench_fill
+            c.alignment = right
+            c.border = border
+
+    # 领航1号 - 中证500 cumulative excess (region-return difference, pp)
+    cum_row = nav_base + 2
+    nc = ws.cell(row=cum_row, column=1, value="领航1号 - 中证500 累计超额")
+    nc.font = excess_font
+    nc.fill = excess_fill
+    nc.alignment = center
+    nc.border = border
+    lh = nav.get("领航1号", {})
+    lh0 = lh.get(dates[0])
+    cs0 = bench_close["CSI500"].get(dates[0])
+    for j, d in enumerate(dates, start=2):
+        lhd = lh.get(d)
+        csd = bench_close["CSI500"].get(d)
+        ex = None
+        if None not in (lhd, lh0, csd, cs0) and lh0 and cs0:
+            ex = (lhd / lh0 - 1.0) - (csd / cs0 - 1.0)  # fraction
+        c = ws.cell(row=cum_row, column=j, value=ex)
+        c.number_format = "0.00%"
+        c.fill = excess_fill
+        c.alignment = right
+        c.border = border
+
     _finalize(ws)
 
     # Sheet 2: YTD (% format expects fractions); no benchmark rows here anymore
@@ -338,6 +393,82 @@ def _build_daily_chart(out_path: Path, extractions: list[Extraction],
     plt.close(fig)
 
 
+def _build_nav_chart(out_path: Path, extractions: list[Extraction],
+                     product_order: list[str]) -> None:
+    """Linear fluctuation chart for the NAV sheet. Funds and index points
+    differ by ~4 orders of magnitude, so everything is rebased to 100 at the
+    first date (cumulative-growth index). The 领航1号 - 中证500 cumulative
+    excess (percentage points) rides a secondary axis."""
+    _setup_chinese_font()
+
+    dates = [e.date for e in extractions]
+    n = len(dates)
+    xs = list(range(n))
+    short_labels = [d[5:] for d in dates]
+
+    nav = _nav_grid(extractions, product_order)
+    bench_close = _bench_close(dates)
+
+    def _rebased(series: dict[str, float | None]) -> list[float | None]:
+        base = series.get(dates[0])
+        if not base:
+            return [None] * n
+        return [(series.get(d) / base * 100.0) if series.get(d) is not None
+                else None for d in dates]
+
+    width = max(11, 9 + n * 0.35)
+    fig, ax = plt.subplots(figsize=(width, 6.5))
+    marker_size = max(3, 7 - n // 8)
+    cmap = plt.get_cmap("tab10")
+
+    for i, name in enumerate(product_order):
+        ax.plot(xs, _rebased(nav[name]), marker="o", markersize=marker_size,
+                linewidth=1.5, color=cmap(i % 10), label=name)
+
+    ax.plot(xs, _rebased(bench_close["CSI300"]), linestyle="--", marker="s",
+            markersize=marker_size, linewidth=2.2, color="#1f6feb",
+            label="沪深300")
+    ax.plot(xs, _rebased(bench_close["CSI500"]), linestyle=":", marker="^",
+            markersize=marker_size, linewidth=2.2, color="#d97706",
+            label="中证500")
+
+    ax.axhline(100, color="#888", linewidth=0.8)
+    ax.set_xticks(xs)
+    ax.set_xticklabels(short_labels, rotation=45, ha="right",
+                       fontsize=max(7, 9 - n // 10))
+    ax.set_ylabel(f"归一化指数 (首日={dates[0]}=100)")
+    ax.set_xlabel("日期")
+    ax.set_title(f"基金净值 / 指数点位 归一化波动 ({dates[0]} ~ {dates[-1]})")
+    ax.grid(axis="y", linestyle="--", alpha=0.35)
+
+    lh = nav.get("领航1号", {})
+    lh0 = lh.get(dates[0])
+    cs0 = bench_close["CSI500"].get(dates[0])
+    excess_pp = []
+    for d in dates:
+        lhd, csd = lh.get(d), bench_close["CSI500"].get(d)
+        if None not in (lhd, lh0, csd, cs0) and lh0 and cs0:
+            excess_pp.append(((lhd / lh0 - 1) - (csd / cs0 - 1)) * 100.0)
+        else:
+            excess_pp.append(None)
+    ax2 = ax.twinx()
+    ax2.plot(xs, excess_pp, linestyle="-", marker="D",
+             markersize=marker_size + 1, linewidth=2.4, color="#9C0006",
+             label="领航1号 - 中证500 累计超额 (右轴)")
+    ax2.axhline(0, color="#9C0006", linewidth=0.6, alpha=0.4)
+    ax2.set_ylabel("累计超额 (百分点)", color="#9C0006")
+    ax2.tick_params(axis="y", labelcolor="#9C0006")
+
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2, loc="center left",
+              bbox_to_anchor=(1.08, 0.5), fontsize=9, frameon=False)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _build_chart(out_path: Path, extractions: list[Extraction],
                  bench_by_date: dict[str, list[BenchmarkReturn]],
                  product_order: list[str]) -> None:
@@ -423,18 +554,21 @@ def main(argv: list[str] | None = None) -> int:
     xlsx_path = args.out_dir / f"{stem}_table.xlsx"
     chart_path = args.out_dir / f"{stem}_chart.png"
     daily_chart_path = args.out_dir / f"{stem}_daily_chart.png"
+    nav_chart_path = args.out_dir / f"{stem}_nav_chart.png"
 
     _write_markdown(md_path, extractions, bench_by_date, product_order)
     _write_csv(csv_path, extractions, bench_by_date)
     _write_xlsx(xlsx_path, extractions, bench_by_date, product_order)
     _build_chart(chart_path, extractions, bench_by_date, product_order)
     _build_daily_chart(daily_chart_path, extractions, product_order)
+    _build_nav_chart(nav_chart_path, extractions, product_order)
 
     print(json.dumps({
         "dates": [e.date for e in extractions],
         "products": product_order,
         "outputs": [str(md_path), str(csv_path), str(xlsx_path),
-                    str(chart_path), str(daily_chart_path)],
+                    str(chart_path), str(daily_chart_path),
+                    str(nav_chart_path)],
     }, ensure_ascii=False, indent=2))
     return 0
 
