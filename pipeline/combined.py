@@ -26,9 +26,30 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from .benchmark import returns_since_march_first, BenchmarkReturn
+from .benchmark import returns_since_march_first, BenchmarkReturn, _load as _load_bench_cache, INDEX_CODES, DISPLAY_NAMES
 from .extractor import Extraction, _from_dict
 from .report import _setup_chinese_font
+
+
+def _bench_daily_pct(dates_iso: list[str]) -> dict[str, dict[str, float]]:
+    """For each ISO date in `dates_iso`, return daily % change for CSI 300 and
+    CSI 500 vs the previous cached trading day."""
+    cache = _load_bench_cache()
+    out: dict[str, dict[str, float]] = {"CSI300": {}, "CSI500": {}}
+    for key in ("CSI300", "CSI500"):
+        series = cache.get(INDEX_CODES[key], {})
+        sorted_days = sorted(series.keys())
+        for d_iso in dates_iso:
+            d = d_iso.replace("-", "")
+            if d not in series:
+                continue
+            idx = sorted_days.index(d)
+            if idx == 0:
+                continue
+            prev = sorted_days[idx - 1]
+            pct = (series[d] - series[prev]) / series[prev] * 100.0
+            out[key][d_iso] = pct
+    return out
 
 
 def _load_sidecar(samples_dir: Path, yyyymmdd: str) -> Extraction:
@@ -143,6 +164,8 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
             p = by_name.get(n)
             daily[n][e.date] = p.daily_change_pct if p else None
 
+    bench_daily = _bench_daily_pct(dates)
+
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -150,18 +173,19 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
     header_fill = PatternFill("solid", fgColor="305496")
     bench_font = Font(bold=True, italic=True)
     bench_fill = PatternFill("solid", fgColor="FFF2CC")
+    excess_font = Font(bold=True, color="9C0006")
+    excess_fill = PatternFill("solid", fgColor="FCE4D6")
     thin = Side(style="thin", color="BFBFBF")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     center = Alignment(horizontal="center", vertical="center")
     right = Alignment(horizontal="right", vertical="center")
 
-    def _write_sheet(title: str, grid: dict[str, dict[str, float | None]],
-                     number_fmt: str, *, include_benchmarks: bool = False) -> None:
-        ws = wb.create_sheet(title)
-        ws.cell(row=1, column=1, value="产品").font = header_font
-        ws.cell(row=1, column=1).fill = header_fill
-        ws.cell(row=1, column=1).alignment = center
-        ws.cell(row=1, column=1).border = border
+    def _header(ws) -> None:
+        c = ws.cell(row=1, column=1, value="产品")
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = center
+        c.border = border
         for j, d in enumerate(dates, start=2):
             c = ws.cell(row=1, column=j, value=d)
             c.font = header_font
@@ -169,6 +193,8 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
             c.alignment = center
             c.border = border
 
+    def _product_rows(ws, grid: dict[str, dict[str, float | None]],
+                      number_fmt: str) -> None:
         for i, name in enumerate(product_order, start=2):
             nc = ws.cell(row=i, column=1, value=name)
             nc.font = Font(bold=True)
@@ -181,43 +207,135 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
                 c.alignment = right
                 c.border = border
 
-        if include_benchmarks:
-            baseline = bench_by_date[dates[0]][0].baseline_date
-            row = len(product_order) + 2
-            for idx, label in enumerate(("沪深300", "中证500")):
-                nc = ws.cell(row=row + idx, column=1,
-                             value=f"{label} (自{baseline}起)")
-                nc.font = bench_font
-                nc.fill = bench_fill
-                nc.alignment = center
-                nc.border = border
-                for j, d in enumerate(dates, start=2):
-                    v = bench_by_date[d][idx].return_pct
-                    c = ws.cell(row=row + idx, column=j, value=v / 100.0)
-                    c.number_format = "0.00%"
-                    c.fill = bench_fill
-                    c.alignment = right
-                    c.border = border
-
-        ws.column_dimensions["A"].width = 24
+    def _finalize(ws) -> None:
+        ws.column_dimensions["A"].width = 26
         for j in range(2, 2 + len(dates)):
             ws.column_dimensions[get_column_letter(j)].width = 12
         ws.freeze_panes = "B2"
 
-    _write_sheet("基金单位净值", nav, "0.0000")
-    # YTD sheet: percent format expects fraction values, divide by 100
-    ytd_frac: dict[str, dict[str, float | None]] = {
-        n: {d: (v / 100.0 if v is not None else None) for d, v in row.items()}
-        for n, row in ytd.items()
-    }
-    _write_sheet("今年以来收益率", ytd_frac, "0.00%", include_benchmarks=True)
-    daily_frac: dict[str, dict[str, float | None]] = {
-        n: {d: (v / 100.0 if v is not None else None) for d, v in row.items()}
-        for n, row in daily.items()
-    }
-    _write_sheet("单日单位净值变动", daily_frac, "0.000%")
+    # Sheet 1: NAV
+    ws = wb.create_sheet("基金单位净值")
+    _header(ws)
+    _product_rows(ws, nav, "0.0000")
+    _finalize(ws)
 
+    # Sheet 2: YTD (% format expects fractions); no benchmark rows here anymore
+    ws = wb.create_sheet("今年以来收益率")
+    _header(ws)
+    ytd_frac = {n: {d: (v / 100.0 if v is not None else None)
+                    for d, v in row.items()} for n, row in ytd.items()}
+    _product_rows(ws, ytd_frac, "0.00%")
+    _finalize(ws)
+
+    # Sheet 3: daily change + CSI 300 / CSI 500 daily + 锐进1号 excess
+    ws = wb.create_sheet("单日单位净值变动")
+    _header(ws)
+    daily_frac = {n: {d: (v / 100.0 if v is not None else None)
+                      for d, v in row.items()} for n, row in daily.items()}
+    _product_rows(ws, daily_frac, "0.000%")
+
+    base_row = len(product_order) + 2
+    # CSI 300, CSI 500 rows
+    for offset, (key, label) in enumerate((("CSI300", "沪深300"),
+                                           ("CSI500", "中证500"))):
+        r = base_row + offset
+        nc = ws.cell(row=r, column=1, value=f"{label} (单日)")
+        nc.font = bench_font
+        nc.fill = bench_fill
+        nc.alignment = center
+        nc.border = border
+        for j, d in enumerate(dates, start=2):
+            v = bench_daily[key].get(d)
+            c = ws.cell(row=r, column=j,
+                        value=(v / 100.0 if v is not None else None))
+            c.number_format = "0.000%"
+            c.fill = bench_fill
+            c.alignment = right
+            c.border = border
+
+    # 锐进1号 - CSI 500 excess return (daily)
+    excess_row = base_row + 2
+    nc = ws.cell(row=excess_row, column=1, value="锐进1号 - 中证500 超额")
+    nc.font = excess_font
+    nc.fill = excess_fill
+    nc.alignment = center
+    nc.border = border
+    rj_daily = daily.get("锐进1号", {})
+    for j, d in enumerate(dates, start=2):
+        rj = rj_daily.get(d)
+        b = bench_daily["CSI500"].get(d)
+        ex = (rj - b) if (rj is not None and b is not None) else None
+        c = ws.cell(row=excess_row, column=j,
+                    value=(ex / 100.0 if ex is not None else None))
+        c.number_format = "0.000%"
+        c.fill = excess_fill
+        c.alignment = right
+        c.border = border
+
+    _finalize(ws)
     wb.save(out_path)
+
+
+def _build_daily_chart(out_path: Path, extractions: list[Extraction],
+                       product_order: list[str]) -> None:
+    """Daily % change: every product + CSI 300 + CSI 500 + 锐进1号 excess."""
+    _setup_chinese_font()
+
+    dates = [e.date for e in extractions]
+    n = len(dates)
+    xs = list(range(n))
+    short_labels = [d[5:] for d in dates]
+
+    daily: dict[str, dict[str, float | None]] = {nm: {} for nm in product_order}
+    for e in extractions:
+        by_name = {p.name: p for p in e.products}
+        for nm in product_order:
+            p = by_name.get(nm)
+            daily[nm][e.date] = p.daily_change_pct if p else None
+    bench_daily = _bench_daily_pct(dates)
+
+    width = max(11, 9 + n * 0.35)
+    fig, ax = plt.subplots(figsize=(width, 6.5))
+    marker_size = max(3, 7 - n // 8)
+    cmap = plt.get_cmap("tab10")
+
+    for i, name in enumerate(product_order):
+        ys = [daily[name].get(d) for d in dates]
+        ax.plot(xs, ys, marker="o", markersize=marker_size, linewidth=1.4,
+                alpha=0.85, color=cmap(i % 10), label=name)
+
+    ax.plot(xs, [bench_daily["CSI300"].get(d) for d in dates],
+            linestyle="--", marker="s", markersize=marker_size,
+            linewidth=2.2, color="#1f6feb", label="沪深300 (单日)")
+    ax.plot(xs, [bench_daily["CSI500"].get(d) for d in dates],
+            linestyle=":", marker="^", markersize=marker_size,
+            linewidth=2.2, color="#d97706", label="中证500 (单日)")
+
+    rj = daily.get("锐进1号", {})
+    excess = [
+        (rj.get(d) - bench_daily["CSI500"].get(d))
+        if (rj.get(d) is not None and bench_daily["CSI500"].get(d) is not None)
+        else None
+        for d in dates
+    ]
+    ax.plot(xs, excess, linestyle="-", marker="D", markersize=marker_size + 1,
+            linewidth=2.4, color="#9C0006",
+            label="锐进1号 - 中证500 超额")
+
+    ax.set_xticks(xs)
+    ax.set_xticklabels(short_labels, rotation=45, ha="right",
+                       fontsize=max(7, 9 - n // 10))
+    ax.axhline(0, color="#888", linewidth=0.8)
+    ax.set_ylabel("单日变动 (%)")
+    ax.set_xlabel("日期")
+    ax.set_title(f"单日变动 — 基金 / 基准 / 超额 ({dates[0]} ~ {dates[-1]})")
+    ax.grid(axis="y", linestyle="--", alpha=0.35)
+    ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5),
+              fontsize=9, frameon=False)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 def _build_chart(out_path: Path, extractions: list[Extraction],
@@ -304,16 +422,19 @@ def main(argv: list[str] | None = None) -> int:
     csv_path = args.out_dir / f"{stem}_table.csv"
     xlsx_path = args.out_dir / f"{stem}_table.xlsx"
     chart_path = args.out_dir / f"{stem}_chart.png"
+    daily_chart_path = args.out_dir / f"{stem}_daily_chart.png"
 
     _write_markdown(md_path, extractions, bench_by_date, product_order)
     _write_csv(csv_path, extractions, bench_by_date)
     _write_xlsx(xlsx_path, extractions, bench_by_date, product_order)
     _build_chart(chart_path, extractions, bench_by_date, product_order)
+    _build_daily_chart(daily_chart_path, extractions, product_order)
 
     print(json.dumps({
         "dates": [e.date for e in extractions],
         "products": product_order,
-        "outputs": [str(md_path), str(csv_path), str(xlsx_path), str(chart_path)],
+        "outputs": [str(md_path), str(csv_path), str(xlsx_path),
+                    str(chart_path), str(daily_chart_path)],
     }, ensure_ascii=False, indent=2))
     return 0
 
