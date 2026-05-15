@@ -4,6 +4,8 @@ Reads per-day extractions (from samples/<YYYYMMDD>.json sidecars) and produces:
   - <stem>_table.md    NAV grid (rows = products, cols = dates) + YTD grid
   - <stem>_table.csv   long format: (date, product, nav, ytd_return_pct,
                        daily_change_pct)
+  - <stem>_table.xlsx  three wide sheets: 基金单位净值 / 今年以来收益率 /
+                       单日单位净值变动 (rows = products, cols = dates)
   - <stem>_chart.png   line chart of YTD% across days, with CSI 300 / CSI 500
                        since-March-1 trajectories overlaid
 
@@ -124,6 +126,100 @@ def _write_csv(out_path: Path, extractions: list[Extraction],
                             "", f"{b.return_pct:.4f}", ""])
 
 
+def _write_xlsx(out_path: Path, extractions: list[Extraction],
+                bench_by_date: dict[str, list[BenchmarkReturn]],
+                product_order: list[str]) -> None:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    dates = [e.date for e in extractions]
+    nav = _nav_grid(extractions, product_order)
+    ytd = _ytd_grid(extractions, product_order)
+    daily: dict[str, dict[str, float | None]] = {n: {} for n in product_order}
+    for e in extractions:
+        by_name = {p.name: p for p in e.products}
+        for n in product_order:
+            p = by_name.get(n)
+            daily[n][e.date] = p.daily_change_pct if p else None
+
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="305496")
+    bench_font = Font(bold=True, italic=True)
+    bench_fill = PatternFill("solid", fgColor="FFF2CC")
+    thin = Side(style="thin", color="BFBFBF")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center")
+    right = Alignment(horizontal="right", vertical="center")
+
+    def _write_sheet(title: str, grid: dict[str, dict[str, float | None]],
+                     number_fmt: str, *, include_benchmarks: bool = False) -> None:
+        ws = wb.create_sheet(title)
+        ws.cell(row=1, column=1, value="产品").font = header_font
+        ws.cell(row=1, column=1).fill = header_fill
+        ws.cell(row=1, column=1).alignment = center
+        ws.cell(row=1, column=1).border = border
+        for j, d in enumerate(dates, start=2):
+            c = ws.cell(row=1, column=j, value=d)
+            c.font = header_font
+            c.fill = header_fill
+            c.alignment = center
+            c.border = border
+
+        for i, name in enumerate(product_order, start=2):
+            nc = ws.cell(row=i, column=1, value=name)
+            nc.font = Font(bold=True)
+            nc.alignment = center
+            nc.border = border
+            for j, d in enumerate(dates, start=2):
+                v = grid[name].get(d)
+                c = ws.cell(row=i, column=j, value=v)
+                c.number_format = number_fmt
+                c.alignment = right
+                c.border = border
+
+        if include_benchmarks:
+            baseline = bench_by_date[dates[0]][0].baseline_date
+            row = len(product_order) + 2
+            for idx, label in enumerate(("沪深300", "中证500")):
+                nc = ws.cell(row=row + idx, column=1,
+                             value=f"{label} (自{baseline}起)")
+                nc.font = bench_font
+                nc.fill = bench_fill
+                nc.alignment = center
+                nc.border = border
+                for j, d in enumerate(dates, start=2):
+                    v = bench_by_date[d][idx].return_pct
+                    c = ws.cell(row=row + idx, column=j, value=v / 100.0)
+                    c.number_format = "0.00%"
+                    c.fill = bench_fill
+                    c.alignment = right
+                    c.border = border
+
+        ws.column_dimensions["A"].width = 24
+        for j in range(2, 2 + len(dates)):
+            ws.column_dimensions[get_column_letter(j)].width = 12
+        ws.freeze_panes = "B2"
+
+    _write_sheet("基金单位净值", nav, "0.0000")
+    # YTD sheet: percent format expects fraction values, divide by 100
+    ytd_frac: dict[str, dict[str, float | None]] = {
+        n: {d: (v / 100.0 if v is not None else None) for d, v in row.items()}
+        for n, row in ytd.items()
+    }
+    _write_sheet("今年以来收益率", ytd_frac, "0.00%", include_benchmarks=True)
+    daily_frac: dict[str, dict[str, float | None]] = {
+        n: {d: (v / 100.0 if v is not None else None) for d, v in row.items()}
+        for n, row in daily.items()
+    }
+    _write_sheet("单日单位净值变动", daily_frac, "0.000%")
+
+    wb.save(out_path)
+
+
 def _build_chart(out_path: Path, extractions: list[Extraction],
                  bench_by_date: dict[str, list[BenchmarkReturn]],
                  product_order: list[str]) -> None:
@@ -206,16 +302,18 @@ def main(argv: list[str] | None = None) -> int:
     stem = _stem(yyyymmdds)
     md_path = args.out_dir / f"{stem}_table.md"
     csv_path = args.out_dir / f"{stem}_table.csv"
+    xlsx_path = args.out_dir / f"{stem}_table.xlsx"
     chart_path = args.out_dir / f"{stem}_chart.png"
 
     _write_markdown(md_path, extractions, bench_by_date, product_order)
     _write_csv(csv_path, extractions, bench_by_date)
+    _write_xlsx(xlsx_path, extractions, bench_by_date, product_order)
     _build_chart(chart_path, extractions, bench_by_date, product_order)
 
     print(json.dumps({
         "dates": [e.date for e in extractions],
         "products": product_order,
-        "outputs": [str(md_path), str(csv_path), str(chart_path)],
+        "outputs": [str(md_path), str(csv_path), str(xlsx_path), str(chart_path)],
     }, ensure_ascii=False, indent=2))
     return 0
 
