@@ -130,27 +130,35 @@ def _build_chart(out_path: Path, extractions: list[Extraction],
     _setup_chinese_font()
 
     dates = [e.date for e in extractions]
+    n = len(dates)
+    xs = list(range(n))
     short_labels = [d[5:] for d in dates]  # MM-DD
     ytd_grid = _ytd_grid(extractions, product_order)
 
-    fig, ax = plt.subplots(figsize=(11, 6.5))
+    # widen figure proportionally for many dates
+    width = max(11, 9 + n * 0.35)
+    fig, ax = plt.subplots(figsize=(width, 6.5))
 
+    marker_size = max(3, 7 - n // 8)
     cmap = plt.get_cmap("tab10")
     for i, name in enumerate(product_order):
         ys = [ytd_grid[name].get(d) for d in dates]
-        ax.plot(short_labels, ys, marker="o", linewidth=1.6,
+        ax.plot(xs, ys, marker="o", markersize=marker_size, linewidth=1.6,
                 color=cmap(i % 10), label=name)
 
     bench300 = [bench_by_date[d][0].return_pct for d in dates]
     bench500 = [bench_by_date[d][1].return_pct for d in dates]
     baseline_date = bench_by_date[dates[0]][0].baseline_date
-    ax.plot(short_labels, bench300, linestyle="--", marker="s",
+    ax.plot(xs, bench300, linestyle="--", marker="s", markersize=marker_size,
             linewidth=2.2, color="#1f6feb",
             label=f"沪深300 (自{baseline_date}起)")
-    ax.plot(short_labels, bench500, linestyle=":", marker="^",
+    ax.plot(xs, bench500, linestyle=":", marker="^", markersize=marker_size,
             linewidth=2.2, color="#d97706",
             label=f"中证500 (自{baseline_date}起)")
 
+    ax.set_xticks(xs)
+    ax.set_xticklabels(short_labels, rotation=45, ha="right",
+                       fontsize=max(7, 9 - n // 10))
     ax.axhline(0, color="#888", linewidth=0.8)
     ax.set_ylabel("今年以来收益率 (%)")
     ax.set_xlabel("日期")
