@@ -28,7 +28,7 @@ except ImportError:
 
 # ── 配置 ──────────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "sk-frbHt4flPytLzekZ585aEb72Bc59489bA901189c374d383b")
-ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.laozhang.ai/v1")
+ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.laozhang.ai")
 MODEL = "claude-opus-4-7"
 MAX_STEPS = 600          # 最大操作步骤（30课时 × ~20步/课时）
 UI_DELAY = 0.6           # 每次操作后等待UI响应的秒数
