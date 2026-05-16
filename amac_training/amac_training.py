@@ -371,71 +371,27 @@ async def process_lesson(page: Page, lesson: dict, progress: dict) -> bool:
 
 
 async def wait_for_login(page: Page):
-    """
-    打开登录页，等待用户手动登录完成。
-    检测到登录成功（页面跳转离开登录页）后自动继续。
-    """
-    log.info("正在打开登录页面，请在浏览器中手动完成登录 …")
+    """打开平台首页，等待用户手动登录后按 Enter 继续。"""
+    # 删除可能过期的旧 Cookie，避免误判
+    if COOKIES_FILE.exists():
+        COOKIES_FILE.unlink()
+        log.info("已清除旧 Cookie，重新登录")
+
+    log.info("正在打开培训平台 …")
     await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30_000)
-    await asyncio.sleep(2)
 
-    # 判断是否已在登录态（已有 Cookie 时可能直接跳过）
-    if await is_logged_in(page):
-        log.info("✓ 检测到已登录状态，直接开始")
-        return
-
-    # 等待用户手动登录
     print("\n" + "="*60)
     print("  浏览器已打开，请手动登录基金业协会培训平台。")
     print("  登录完成后，回到此终端窗口按 Enter 继续。")
-    print("="*60 + "\n")
+    print("="*60)
 
-    # 同时自动检测登录成功（URL 变化或出现用户信息）
     loop = asyncio.get_event_loop()
-    login_detected = asyncio.Event()
+    await loop.run_in_executor(None, input, "\n登录完成后按 Enter: ")
 
-    async def poll_login():
-        for _ in range(600):   # 最多等 10 分钟
-            if await is_logged_in(page):
-                login_detected.set()
-                return
-            await asyncio.sleep(1)
-
-    asyncio.create_task(poll_login())
-
-    # 等待自动检测或用户手动确认，哪个先到都行
-    enter_task = loop.run_in_executor(None, input, "（或直接按 Enter 跳过检测）: ")
-    done, _ = await asyncio.wait(
-        [asyncio.ensure_future(asyncio.wrap_future(enter_task)), asyncio.ensure_future(login_detected.wait())],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-
-    # 登录成功后保存 Cookie 供下次使用
+    # 保存 Cookie 供下次复用
     cookies = await page.context.cookies()
     COOKIES_FILE.write_text(json.dumps(cookies, ensure_ascii=False, indent=2), encoding="utf-8")
-    log.info(f"✓ 登录成功，Cookie 已自动保存（下次运行将跳过登录步骤）")
-
-
-async def is_logged_in(page: Page) -> bool:
-    """通过页面特征判断是否已登录。"""
-    try:
-        url = page.url
-        # 不在登录页 且 页面有用户相关元素
-        if "login" in url.lower() or url == BASE_URL + "/":
-            # 检查是否有用户头像/姓名等登录后才有的元素
-            logged_in_selectors = [
-                ".user-info", ".user-name", ".logout", ".my-course",
-                "[class*='userinfo']", "[class*='user-avatar']",
-                "a:has-text('退出')", "a:has-text('我的课程')",
-            ]
-            for sel in logged_in_selectors:
-                if await page.query_selector(sel):
-                    return True
-            return False
-        # URL 已跳转离开登录页，说明登录成功
-        return "login" not in url.lower()
-    except Exception:
-        return False
+    log.info(f"✓ Cookie 已保存，共 {len(cookies)} 条")
 
 
 async def run():
@@ -463,10 +419,7 @@ async def run():
 
         page = await context.new_page()
 
-        # 尝试载入已保存的 Cookie
-        await apply_cookies(context)
-
-        # 打开平台，检测登录状态，未登录则等待手动登录
+        # 每次都等用户手动登录后按 Enter
         await wait_for_login(page)
 
         # 导航到职业道德课程
