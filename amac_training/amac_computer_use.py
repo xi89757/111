@@ -27,7 +27,8 @@ except ImportError:
     sys.exit(1)
 
 # ── 配置 ──────────────────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "sk-frbHt4flPytLzekZ585aEb72Bc59489bA901189c374d383b")
+ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.laozhang.ai/v1")
 MODEL = "claude-opus-4-7"
 MAX_STEPS = 600          # 最大操作步骤（30课时 × ~20步/课时）
 UI_DELAY = 0.6           # 每次操作后等待UI响应的秒数
@@ -158,12 +159,7 @@ def execute_action(action: dict) -> str | None:
 # ── 主循环 ────────────────────────────────────────────────────────────────────
 
 def run():
-    if not ANTHROPIC_API_KEY:
-        print("错误：未设置 ANTHROPIC_API_KEY 环境变量")
-        print("请先运行：set ANTHROPIC_API_KEY=sk-ant-xxxxxxxx")
-        sys.exit(1)
-
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, base_url=ANTHROPIC_BASE_URL)
     width, height = get_screen_size()
     print(f"截图分辨率: {width}×{height}")
 
@@ -307,8 +303,8 @@ if __name__ == "__main__":
     print()
     print("前提条件：")
     print("  1. 浏览器已登录 https://peixun.amac.org.cn/")
-    print("  2. 设置了 ANTHROPIC_API_KEY 环境变量")
-    print("  3. 已安装依赖：pip install anthropic pyautogui pillow")
+    print("  2. 已安装依赖：pip install anthropic pyautogui pillow")
+    print(f"  API: {ANTHROPIC_BASE_URL}")
     print()
     print("注意：运行期间请勿操作鼠标/键盘，Claude 将自动控制。")
     print()
