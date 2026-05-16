@@ -20,10 +20,11 @@ import time
 from io import BytesIO
 
 try:
+    import httpx
     import pyautogui
     from PIL import ImageGrab, Image
 except ImportError:
-    print("缺少依赖，请运行：pip install pyautogui pillow")
+    print("缺少依赖，请运行：pip install anthropic httpx pyautogui pillow")
     sys.exit(1)
 
 # ── 配置 ──────────────────────────────────────────────────────────────────────
@@ -59,16 +60,19 @@ SYSTEM_PROMPT = """你是一个专门帮助用户在"基金业协会培训平台
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
 
 def take_screenshot() -> str:
-    """截取全屏并返回 base64 编码的 PNG"""
+    """截取全屏并返回 base64 编码的 JPEG（压缩以减小请求体）"""
     img = ImageGrab.grab()
-    # 如果分辨率超过 1920×1080，按比例缩小以节省 token
-    max_w, max_h = 1920, 1080
+    # 缩小到最大 1280×720 以减小请求体，避免代理截断
+    max_w, max_h = 1280, 720
     w, h = img.size
     if w > max_w or h > max_h:
         ratio = min(max_w / w, max_h / h)
         img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+    # 转 RGB（JPEG 不支持 RGBA）
+    if img.mode != "RGB":
+        img = img.convert("RGB")
     buf = BytesIO()
-    img.save(buf, format="PNG", optimize=True)
+    img.save(buf, format="JPEG", quality=75, optimize=True)
     return base64.standard_b64encode(buf.getvalue()).decode()
 
 
@@ -159,9 +163,15 @@ def execute_action(action: dict) -> str | None:
 # ── 主循环 ────────────────────────────────────────────────────────────────────
 
 def run():
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, base_url=ANTHROPIC_BASE_URL)
+    # trust_env=False 绕过 Windows 系统代理，避免代理中断大请求
+    http_client = httpx.Client(trust_env=False, timeout=120)
+    client = anthropic.Anthropic(
+        api_key=ANTHROPIC_API_KEY,
+        base_url=ANTHROPIC_BASE_URL,
+        http_client=http_client,
+    )
     width, height = get_screen_size()
-    print(f"截图分辨率: {width}×{height}")
+    print(f"截图分辨率: {width}×{height} (发送尺寸最大 1280×720 JPEG)")
 
     tools = [
         {
@@ -181,7 +191,7 @@ def run():
             "content": [
                 {
                     "type": "image",
-                    "source": {"type": "base64", "media_type": "image/png", "data": initial_shot},
+                    "source": {"type": "base64", "media_type": "image/jpeg", "data": initial_shot},
                 },
                 {
                     "type": "text",
@@ -252,7 +262,7 @@ def run():
                 "content": [
                     {
                         "type": "image",
-                        "source": {"type": "base64", "media_type": "image/png", "data": shot},
+                        "source": {"type": "base64", "media_type": "image/jpeg", "data": shot},
                     },
                     {
                         "type": "text",
@@ -282,7 +292,7 @@ def run():
                             "type": "image",
                             "source": {
                                 "type": "base64",
-                                "media_type": "image/png",
+                                "media_type": "image/jpeg",
                                 "data": screenshot_after,
                             },
                         }
