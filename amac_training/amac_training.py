@@ -3,6 +3,7 @@
 基金业协会培训平台自动化脚本
 目标：完成公开课 -> 职业道德课程（30课时）+ 每主题答题
 用法：python amac_training.py
+  → 脚本自动打开浏览器，等你手动登录后按回车，自动接管后续操作
 """
 
 import asyncio
@@ -17,10 +18,10 @@ from playwright.async_api import async_playwright, Page, BrowserContext, Timeout
 
 # ─── 配置 ────────────────────────────────────────────────────────────────────
 BASE_URL       = "https://peixun.amac.org.cn"
-COOKIES_FILE   = Path(__file__).parent / "cookies.json"
+COOKIES_FILE   = Path(__file__).parent / "cookies.json"   # 可选，有则自动载入
 PROGRESS_FILE  = Path(__file__).parent / "progress.json"
 LOG_FILE       = Path(__file__).parent / "training.log"
-HEADLESS       = False   # False = 可见浏览器，方便调试；True = 后台运行
+HEADLESS       = False   # 必须 False，需要可见浏览器让你登录
 VIDEO_TIMEOUT  = 7200    # 单个视频最长等待秒数（2小时兜底）
 SPEED_FACTOR   = 2.0     # 视频倍速（若平台允许）
 # ─────────────────────────────────────────────────────────────────────────────
@@ -53,16 +54,13 @@ def save_progress(progress: dict):
 
 
 async def apply_cookies(context: BrowserContext):
-    if not COOKIES_FILE.exists():
-        log.error(
-            f"未找到 {COOKIES_FILE}！\n"
-            "请先在登录后的浏览器控制台运行 export_cookies.js，\n"
-            "将输出内容保存为 cookies.json 放在本目录下。"
-        )
-        sys.exit(1)
-    cookies = json.loads(COOKIES_FILE.read_text(encoding="utf-8"))
-    await context.add_cookies(cookies)
-    log.info(f"已载入 {len(cookies)} 条 Cookie")
+    """载入已保存的 Cookie（可选）。"""
+    if COOKIES_FILE.exists():
+        cookies = json.loads(COOKIES_FILE.read_text(encoding="utf-8"))
+        await context.add_cookies(cookies)
+        log.info(f"已载入已保存的 Cookie（{len(cookies)} 条）")
+    else:
+        log.info("无已保存的 Cookie，将在浏览器中等待手动登录")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -372,6 +370,74 @@ async def process_lesson(page: Page, lesson: dict, progress: dict) -> bool:
     return video_ok
 
 
+async def wait_for_login(page: Page):
+    """
+    打开登录页，等待用户手动登录完成。
+    检测到登录成功（页面跳转离开登录页）后自动继续。
+    """
+    log.info("正在打开登录页面，请在浏览器中手动完成登录 …")
+    await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30_000)
+    await asyncio.sleep(2)
+
+    # 判断是否已在登录态（已有 Cookie 时可能直接跳过）
+    if await is_logged_in(page):
+        log.info("✓ 检测到已登录状态，直接开始")
+        return
+
+    # 等待用户手动登录
+    print("\n" + "="*60)
+    print("  浏览器已打开，请手动登录基金业协会培训平台。")
+    print("  登录完成后，回到此终端窗口按 Enter 继续。")
+    print("="*60 + "\n")
+
+    # 同时自动检测登录成功（URL 变化或出现用户信息）
+    loop = asyncio.get_event_loop()
+    login_detected = asyncio.Event()
+
+    async def poll_login():
+        for _ in range(600):   # 最多等 10 分钟
+            if await is_logged_in(page):
+                login_detected.set()
+                return
+            await asyncio.sleep(1)
+
+    asyncio.create_task(poll_login())
+
+    # 等待自动检测或用户手动确认，哪个先到都行
+    enter_task = loop.run_in_executor(None, input, "（或直接按 Enter 跳过检测）: ")
+    done, _ = await asyncio.wait(
+        [asyncio.ensure_future(asyncio.wrap_future(enter_task)), asyncio.ensure_future(login_detected.wait())],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+
+    # 登录成功后保存 Cookie 供下次使用
+    cookies = await page.context.cookies()
+    COOKIES_FILE.write_text(json.dumps(cookies, ensure_ascii=False, indent=2), encoding="utf-8")
+    log.info(f"✓ 登录成功，Cookie 已自动保存（下次运行将跳过登录步骤）")
+
+
+async def is_logged_in(page: Page) -> bool:
+    """通过页面特征判断是否已登录。"""
+    try:
+        url = page.url
+        # 不在登录页 且 页面有用户相关元素
+        if "login" in url.lower() or url == BASE_URL + "/":
+            # 检查是否有用户头像/姓名等登录后才有的元素
+            logged_in_selectors = [
+                ".user-info", ".user-name", ".logout", ".my-course",
+                "[class*='userinfo']", "[class*='user-avatar']",
+                "a:has-text('退出')", "a:has-text('我的课程')",
+            ]
+            for sel in logged_in_selectors:
+                if await page.query_selector(sel):
+                    return True
+            return False
+        # URL 已跳转离开登录页，说明登录成功
+        return "login" not in url.lower()
+    except Exception:
+        return False
+
+
 async def run():
     progress = load_progress()
     completed = len(progress["completed_ids"])
@@ -395,13 +461,18 @@ async def run():
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
 
-        await apply_cookies(context)
         page = await context.new_page()
+
+        # 尝试载入已保存的 Cookie
+        await apply_cookies(context)
+
+        # 打开平台，检测登录状态，未登录则等待手动登录
+        await wait_for_login(page)
 
         # 导航到职业道德课程
         ok = await navigate_to_zhiye_daode(page)
         if not ok:
-            log.error("导航失败，请在弹出的浏览器中手动导航到职业道德课程后按 Enter")
+            log.error("导航失败，请在浏览器中手动进入职业道德课程后按 Enter")
             input("手动导航完成后，按 Enter 继续 ...")
 
         # 获取课时列表
