@@ -538,7 +538,7 @@ def main(argv: list[str] | None = None) -> int:
                 yyyymmdds.append(ymd)
             cur += timedelta(days=1)
     else:
-        yyyymmdds = sorted(args.dates)
+        yyyymmdds = sorted(dict.fromkeys(args.dates))
 
     if not yyyymmdds:
         raise SystemExit("no dates resolved; pass YYYYMMDD args or --range")
