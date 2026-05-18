@@ -166,6 +166,7 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
     from openpyxl.utils import get_column_letter
+    from openpyxl.chart import LineChart, Reference
 
     dates = [e.date for e in extractions]
     nav = _nav_grid(extractions, product_order)
@@ -250,29 +251,81 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
             c.alignment = right
             c.border = border
 
-    # 领航1号 - 中证500 cumulative excess (region-return difference, pp)
+    # 领航1号 - 中证500 cumulative excess, as a LIVE Excel formula so the
+    # cells (and the embedded chart) recompute if any NAV/close is edited.
+    cs_row = nav_base + 1                       # 中证500 (收盘点位)
     cum_row = nav_base + 2
     nc = ws.cell(row=cum_row, column=1, value="领航1号 - 中证500 累计超额")
     nc.font = excess_font
     nc.fill = excess_fill
     nc.alignment = center
     nc.border = border
-    lh = nav.get("领航1号", {})
-    lh0 = lh.get(dates[0])
-    cs0 = bench_close["CSI500"].get(dates[0])
+    lh_row = (2 + product_order.index("领航1号")
+              if "领航1号" in product_order else None)
+    b = get_column_letter(2)                    # first-date (baseline) column
     for j, d in enumerate(dates, start=2):
-        lhd = lh.get(d)
-        csd = bench_close["CSI500"].get(d)
-        ex = None
-        if None not in (lhd, lh0, csd, cs0) and lh0 and cs0:
-            ex = (lhd / lh0 - 1.0) - (csd / cs0 - 1.0)  # fraction
-        c = ws.cell(row=cum_row, column=j, value=ex)
+        col = get_column_letter(j)
+        if lh_row is not None:
+            # (领航1号_j/领航1号_首日 - 1) - (中证500_j/中证500_首日 - 1)
+            f = (f"=({col}{lh_row}/${b}${lh_row}-1)"
+                 f"-({col}{cs_row}/${b}${cs_row}-1)")
+            c = ws.cell(row=cum_row, column=j, value=f)
+        else:
+            c = ws.cell(row=cum_row, column=j, value=None)
         c.number_format = "0.00%"
         c.fill = excess_fill
         c.alignment = right
         c.border = border
 
+    # Formula caption (visible) + a note on the row label.
+    formula_text = ("累计超额 = (领航1号净值 ÷ 首日净值 − 1) "
+                    "− (中证500收盘 ÷ 首日收盘 − 1)；首日 = 0，单位：百分点")
+    cap = ws.cell(row=cum_row + 2, column=1, value=formula_text)
+    cap.font = Font(italic=True, color="9C0006")
+    ws.merge_cells(start_row=cum_row + 2, start_column=1,
+                   end_row=cum_row + 2, end_column=min(2 + len(dates), 12))
+
     _finalize(ws)
+
+    # Embedded line chart inside this sheet: 领航1号 NAV on the left axis,
+    # 领航1号 - 中证500 累计超额 on the right (secondary) axis.
+    if lh_row is not None:
+        last_col = 1 + len(dates)
+        cats = Reference(ws, min_col=2, max_col=last_col,
+                         min_row=1, max_row=1)
+
+        c1 = LineChart()
+        c1.title = "领航1号 单位净值 与 领航1号-中证500 累计超额"
+        c1.style = 12
+        c1.height, c1.width = 8.5, max(16, 9 + len(dates) * 0.45)
+        nav_ref = Reference(ws, min_col=1, max_col=last_col,
+                            min_row=lh_row, max_row=lh_row)
+        c1.add_data(nav_ref, titles_from_data=True, from_rows=True)
+        c1.set_categories(cats)
+        c1.y_axis.title = "领航1号 单位净值"
+        c1.x_axis.title = "日期"
+        c1.y_axis.majorGridlines = None
+
+        c2 = LineChart()
+        ex_ref = Reference(ws, min_col=1, max_col=last_col,
+                           min_row=cum_row, max_row=cum_row)
+        c2.add_data(ex_ref, titles_from_data=True, from_rows=True)
+        c2.set_categories(cats)
+        c2.y_axis.axId = 200
+        c2.y_axis.title = "领航1号-中证500 累计超额 (%)"
+        c2.y_axis.numFmt = "0.00%"
+        c2.y_axis.crosses = "max"          # draw on the right
+
+        if c1.series:
+            c1.series[0].graphicalProperties.line.width = 22000  # NAV
+            c1.series[0].graphicalProperties.line.solidFill = "1F6FEB"
+        if c2.series:
+            s = c2.series[0]                                     # excess
+            s.graphicalProperties.line.width = 26000
+            s.graphicalProperties.line.solidFill = "9C0006"
+
+        c1 += c2
+        ws.add_chart(c1, f"A{cum_row + 4}")
 
     # Sheet 2: YTD (% format expects fractions); no benchmark rows here anymore
     ws = wb.create_sheet("今年以来收益率")
