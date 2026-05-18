@@ -162,11 +162,12 @@ def _write_csv(out_path: Path, extractions: list[Extraction],
 
 def _write_xlsx(out_path: Path, extractions: list[Extraction],
                 bench_by_date: dict[str, list[BenchmarkReturn]],
-                product_order: list[str]) -> None:
+                product_order: list[str],
+                lh_chart_path: Path | None = None) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
     from openpyxl.utils import get_column_letter
-    from openpyxl.chart import LineChart, Reference
+    from openpyxl.drawing.image import Image as XLImage
 
     dates = [e.date for e in extractions]
     nav = _nav_grid(extractions, product_order)
@@ -287,45 +288,11 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
 
     _finalize(ws)
 
-    # Embedded line chart inside this sheet: 领航1号 NAV on the left axis,
-    # 领航1号 - 中证500 累计超额 on the right (secondary) axis.
-    if lh_row is not None:
-        last_col = 1 + len(dates)
-        cats = Reference(ws, min_col=2, max_col=last_col,
-                         min_row=1, max_row=1)
-
-        c1 = LineChart()
-        c1.title = "领航1号 单位净值 与 领航1号-中证500 累计超额"
-        c1.style = 12
-        c1.height, c1.width = 8.5, max(16, 9 + len(dates) * 0.45)
-        nav_ref = Reference(ws, min_col=1, max_col=last_col,
-                            min_row=lh_row, max_row=lh_row)
-        c1.add_data(nav_ref, titles_from_data=True, from_rows=True)
-        c1.set_categories(cats)
-        c1.y_axis.title = "领航1号 单位净值"
-        c1.x_axis.title = "日期"
-        c1.y_axis.majorGridlines = None
-
-        c2 = LineChart()
-        ex_ref = Reference(ws, min_col=1, max_col=last_col,
-                           min_row=cum_row, max_row=cum_row)
-        c2.add_data(ex_ref, titles_from_data=True, from_rows=True)
-        c2.set_categories(cats)
-        c2.y_axis.axId = 200
-        c2.y_axis.title = "领航1号-中证500 累计超额 (%)"
-        c2.y_axis.numFmt = "0.00%"
-        c2.y_axis.crosses = "max"          # draw on the right
-
-        if c1.series:
-            c1.series[0].graphicalProperties.line.width = 22000  # NAV
-            c1.series[0].graphicalProperties.line.solidFill = "1F6FEB"
-        if c2.series:
-            s = c2.series[0]                                     # excess
-            s.graphicalProperties.line.width = 26000
-            s.graphicalProperties.line.solidFill = "9C0006"
-
-        c1 += c2
-        ws.add_chart(c1, f"A{cum_row + 4}")
+    # Embed the 领航1号 NAV-vs-excess chart as a PNG image so it renders
+    # in every spreadsheet viewer (native combined charts with a secondary
+    # axis are silently dropped by some Excel/preview engines).
+    if lh_chart_path is not None and Path(lh_chart_path).exists():
+        ws.add_image(XLImage(str(lh_chart_path)), f"A{cum_row + 4}")
 
     # Sheet 2: YTD (% format expects fractions); no benchmark rows here anymore
     ws = wb.create_sheet("今年以来收益率")
@@ -440,6 +407,67 @@ def _build_daily_chart(out_path: Path, extractions: list[Extraction],
     ax.grid(axis="y", linestyle="--", alpha=0.35)
     ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5),
               fontsize=9, frameon=False)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _build_lh_chart(out_path: Path, extractions: list[Extraction],
+                    product_order: list[str]) -> None:
+    """领航1号 only: unit NAV on the left axis, 领航1号 - 中证500 累计超额
+    on the right axis. Rendered as a PNG so it displays in every viewer."""
+    _setup_chinese_font()
+
+    dates = [e.date for e in extractions]
+    n = len(dates)
+    xs = list(range(n))
+    short_labels = [d[5:] for d in dates]
+
+    nav = _nav_grid(extractions, product_order)
+    bench_close = _bench_close(dates)
+    lh = nav.get("领航1号", {})
+    lh0 = lh.get(dates[0])
+    cs0 = bench_close["CSI500"].get(dates[0])
+
+    nav_y = [lh.get(d) for d in dates]
+    excess_y = []
+    for d in dates:
+        lhd, csd = lh.get(d), bench_close["CSI500"].get(d)
+        if None not in (lhd, lh0, csd, cs0) and lh0 and cs0:
+            excess_y.append(((lhd / lh0 - 1) - (csd / cs0 - 1)) * 100.0)
+        else:
+            excess_y.append(None)
+
+    width = max(11, 9 + n * 0.42)
+    fig, ax = plt.subplots(figsize=(width, 6.2))
+    ms = max(3, 7 - n // 8)
+
+    l1, = ax.plot(xs, nav_y, marker="o", markersize=ms, linewidth=2.0,
+                  color="#1F6FEB", label="领航1号 单位净值")
+    ax.set_ylabel("领航1号 单位净值", color="#1F6FEB")
+    ax.tick_params(axis="y", labelcolor="#1F6FEB")
+    ax.set_xlabel("日期")
+    ax.set_xticks(xs)
+    ax.set_xticklabels(short_labels, rotation=45, ha="right",
+                       fontsize=max(7, 9 - n // 10))
+    ax.grid(axis="y", linestyle="--", alpha=0.3)
+
+    ax2 = ax.twinx()
+    l2, = ax2.plot(xs, excess_y, marker="D", markersize=ms + 1, linewidth=2.4,
+                   color="#9C0006",
+                   label="领航1号 - 中证500 累计超额 (右轴)")
+    ax2.axhline(0, color="#9C0006", linewidth=0.6, alpha=0.4)
+    ax2.set_ylabel("领航1号 - 中证500 累计超额 (百分点)", color="#9C0006")
+    ax2.tick_params(axis="y", labelcolor="#9C0006")
+
+    ax.set_title(f"领航1号 单位净值 与 累计超额 ({dates[0]} ~ {dates[-1]})")
+    ax.legend(handles=[l1, l2], loc="upper left", fontsize=9, frameon=False)
+
+    fig.text(0.5, -0.02,
+             "累计超额 = (领航1号净值 ÷ 首日净值 − 1) "
+             "− (中证500收盘 ÷ 首日收盘 − 1)；首日 = 0，单位：百分点",
+             ha="center", fontsize=9, style="italic", color="#9C0006")
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -608,10 +636,13 @@ def main(argv: list[str] | None = None) -> int:
     chart_path = args.out_dir / f"{stem}_chart.png"
     daily_chart_path = args.out_dir / f"{stem}_daily_chart.png"
     nav_chart_path = args.out_dir / f"{stem}_nav_chart.png"
+    lh_chart_path = args.out_dir / f"{stem}_lh_chart.png"
 
     _write_markdown(md_path, extractions, bench_by_date, product_order)
     _write_csv(csv_path, extractions, bench_by_date)
-    _write_xlsx(xlsx_path, extractions, bench_by_date, product_order)
+    _build_lh_chart(lh_chart_path, extractions, product_order)
+    _write_xlsx(xlsx_path, extractions, bench_by_date, product_order,
+                lh_chart_path)
     _build_chart(chart_path, extractions, bench_by_date, product_order)
     _build_daily_chart(daily_chart_path, extractions, product_order)
     _build_nav_chart(nav_chart_path, extractions, product_order)
@@ -621,7 +652,7 @@ def main(argv: list[str] | None = None) -> int:
         "products": product_order,
         "outputs": [str(md_path), str(csv_path), str(xlsx_path),
                     str(chart_path), str(daily_chart_path),
-                    str(nav_chart_path)],
+                    str(nav_chart_path), str(lh_chart_path)],
     }, ensure_ascii=False, indent=2))
     return 0
 
