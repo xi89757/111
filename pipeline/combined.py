@@ -74,6 +74,41 @@ def _load_sidecar(samples_dir: Path, yyyymmdd: str) -> Extraction:
     return _from_dict(json.loads(path.read_text(encoding="utf-8")))
 
 
+def _lh_history(data_dir: Path = Path("data")) -> dict[str, float]:
+    """领航1号's pre-sample NAV history (ISO date -> NAV). Missing file ⇒ {}."""
+    path = data_dir / "lh_nav_history.json"
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return {k: float(v) for k, v in (payload.get("navs") or {}).items()}
+
+
+def _lh_extended_series(extractions: list[Extraction],
+                        data_dir: Path = Path("data")
+                        ) -> tuple[list[str], dict[str, float]]:
+    """Trading-day timeline for 领航1号 covering its full history.
+
+    Combines history NAVs from `data/lh_nav_history.json` with sample
+    extractions; keeps only dates with a CSI 500 close (i.e. real trading
+    days). Sample-date NAVs take precedence if both sources have them.
+    """
+    history = _lh_history(data_dir)
+    sample_dates = {e.date for e in extractions}
+    cache = _load_bench_cache()
+    csi500_dates = {f"{d[:4]}-{d[4:6]}-{d[6:]}"
+                    for d in cache.get(INDEX_CODES["CSI500"], {})}
+
+    lh_by_date: dict[str, float] = {}
+    for d, v in history.items():
+        if d in csi500_dates and d not in sample_dates:
+            lh_by_date[d] = v
+    for e in extractions:
+        by = {p.name: p for p in e.products}
+        if "领航1号" in by:
+            lh_by_date[e.date] = by["领航1号"].nav
+    return sorted(lh_by_date), lh_by_date
+
+
 def _iso(yyyymmdd: str) -> str:
     return f"{yyyymmdd[:4]}-{yyyymmdd[4:6]}-{yyyymmdd[6:]}"
 
@@ -197,13 +232,13 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
     center = Alignment(horizontal="center", vertical="center")
     right = Alignment(horizontal="right", vertical="center")
 
-    def _header(ws, label_col_title: str) -> None:
+    def _header(ws, label_col_title: str, sheet_dates: list[str]) -> None:
         c = ws.cell(row=1, column=1, value=label_col_title)
         c.font = header_font
         c.fill = header_fill
         c.alignment = center
         c.border = border
-        for j, d in enumerate(dates, start=2):
+        for j, d in enumerate(sheet_dates, start=2):
             c = ws.cell(row=1, column=j, value=d)
             c.font = header_font
             c.fill = header_fill
@@ -212,7 +247,7 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
 
     def _metric_row(ws, row: int, label: str,
                     values: dict[str, float | None], number_fmt: str,
-                    *, divide_by_100: bool = False,
+                    sheet_dates: list[str], *, divide_by_100: bool = False,
                     fill: PatternFill | None = None,
                     label_font: Font | None = None) -> None:
         nc = ws.cell(row=row, column=1, value=label)
@@ -221,7 +256,7 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
             nc.fill = fill
         nc.alignment = center
         nc.border = border
-        for j, d in enumerate(dates, start=2):
+        for j, d in enumerate(sheet_dates, start=2):
             v = values.get(d)
             if v is not None and divide_by_100:
                 v = v / 100.0
@@ -232,27 +267,35 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
             c.alignment = right
             c.border = border
 
-    def _finalize(ws) -> None:
+    def _finalize(ws, sheet_dates: list[str]) -> None:
         ws.column_dimensions["A"].width = 28
-        for j in range(2, 2 + len(dates)):
+        for j in range(2, 2 + len(sheet_dates)):
             ws.column_dimensions[get_column_letter(j)].width = 12
         ws.freeze_panes = "B2"
 
+    lh_ext_dates, lh_ext_nav = _lh_extended_series(extractions)
+
     for name in product_order:
         ws = wb.create_sheet(name)
-        _header(ws, name)
+        is_lh = (name == "领航1号")
+        sheet_dates = lh_ext_dates if is_lh else dates
+        nav_values = lh_ext_nav if is_lh else nav[name]
 
-        _metric_row(ws, 2, "基金单位净值", nav[name], "0.0000")
-        _metric_row(ws, 3, "今年以来收益率", ytd[name], "0.00%",
+        _header(ws, name, sheet_dates)
+        _metric_row(ws, 2, "基金单位净值", nav_values, "0.0000", sheet_dates)
+        _metric_row(ws, 3, "今年以来收益率", ytd[name], "0.00%", sheet_dates,
                     divide_by_100=True)
         _metric_row(ws, 4, "单日单位净值变动", daily[name], "0.000%",
-                    divide_by_100=True)
+                    sheet_dates, divide_by_100=True)
 
-        if name == "领航1号":
-            _metric_row(ws, 5, "沪深300 (收盘点位)", bench_close["CSI300"],
-                        "0.00", fill=bench_fill, label_font=bench_font)
-            _metric_row(ws, 6, "中证500 (收盘点位)", bench_close["CSI500"],
-                        "0.00", fill=bench_fill, label_font=bench_font)
+        if is_lh:
+            lh_bench_close = _bench_close(sheet_dates)
+            _metric_row(ws, 5, "沪深300 (收盘点位)", lh_bench_close["CSI300"],
+                        "0.00", sheet_dates, fill=bench_fill,
+                        label_font=bench_font)
+            _metric_row(ws, 6, "中证500 (收盘点位)", lh_bench_close["CSI500"],
+                        "0.00", sheet_dates, fill=bench_fill,
+                        label_font=bench_font)
 
             lh_row, cs_row, cum_row = 2, 6, 7
             nc = ws.cell(row=cum_row, column=1,
@@ -262,7 +305,7 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
             nc.alignment = center
             nc.border = border
             b = get_column_letter(2)
-            for j, d in enumerate(dates, start=2):
+            for j, d in enumerate(sheet_dates, start=2):
                 col = get_column_letter(j)
                 f = (f"=({col}{lh_row}/${b}${lh_row}-1)"
                      f"-({col}{cs_row}/${b}${cs_row}-1)")
@@ -278,13 +321,13 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
             cap.font = Font(italic=True, color="9C0006")
             ws.merge_cells(start_row=cum_row + 2, start_column=1,
                            end_row=cum_row + 2,
-                           end_column=min(2 + len(dates), 12))
+                           end_column=min(2 + len(sheet_dates), 12))
 
             if lh_chart_path is not None and Path(lh_chart_path).exists():
                 ws.add_image(XLImage(str(lh_chart_path)),
                              f"A{cum_row + 4}")
 
-        _finalize(ws)
+        _finalize(ws, sheet_dates)
 
     wb.save(out_path)
 
@@ -354,17 +397,20 @@ def _build_daily_chart(out_path: Path, extractions: list[Extraction],
 def _build_lh_chart(out_path: Path, extractions: list[Extraction],
                     product_order: list[str]) -> None:
     """领航1号 only: unit NAV on the left axis, 领航1号 - 中证500 累计超额
-    on the right axis. Rendered as a PNG so it displays in every viewer."""
+    on the right axis. Rendered as a PNG so it displays in every viewer.
+
+    Pulls 领航1号's full history from `data/lh_nav_history.json` when
+    available, so the chart can start from the strategy's earliest
+    historical trading day rather than the first sample date.
+    """
     _setup_chinese_font()
 
-    dates = [e.date for e in extractions]
+    dates, lh = _lh_extended_series(extractions)
     n = len(dates)
     xs = list(range(n))
     short_labels = [d[5:] for d in dates]
 
-    nav = _nav_grid(extractions, product_order)
     bench_close = _bench_close(dates)
-    lh = nav.get("领航1号", {})
     lh0 = lh.get(dates[0])
     cs0 = bench_close["CSI500"].get(dates[0])
 
