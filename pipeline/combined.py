@@ -4,8 +4,10 @@ Reads per-day extractions (from samples/<YYYYMMDD>.json sidecars) and produces:
   - <stem>_table.md    NAV grid (rows = products, cols = dates) + YTD grid
   - <stem>_table.csv   long format: (date, product, nav, ytd_return_pct,
                        daily_change_pct)
-  - <stem>_table.xlsx  three wide sheets: 基金单位净值 / 今年以来收益率 /
-                       单日单位净值变动 (rows = products, cols = dates)
+  - <stem>_table.xlsx  one sheet per product (rows = metrics, cols = dates);
+                       领航1号's sheet additionally carries CSI 300 / CSI 500
+                       closes, a live cumulative-excess formula, and the
+                       embedded comparison chart
   - <stem>_chart.png   line chart of YTD% across days, with CSI 300 / CSI 500
                        since-March-1 trajectories overlaid
 
@@ -179,7 +181,7 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
             p = by_name.get(n)
             daily[n][e.date] = p.daily_change_pct if p else None
 
-    bench_daily = _bench_daily_pct(dates)
+    bench_close = _bench_close(dates)
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -195,8 +197,8 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
     center = Alignment(horizontal="center", vertical="center")
     right = Alignment(horizontal="right", vertical="center")
 
-    def _header(ws) -> None:
-        c = ws.cell(row=1, column=1, value="产品")
+    def _header(ws, label_col_title: str) -> None:
+        c = ws.cell(row=1, column=1, value=label_col_title)
         c.font = header_font
         c.fill = header_fill
         c.alignment = center
@@ -208,146 +210,82 @@ def _write_xlsx(out_path: Path, extractions: list[Extraction],
             c.alignment = center
             c.border = border
 
-    def _product_rows(ws, grid: dict[str, dict[str, float | None]],
-                      number_fmt: str) -> None:
-        for i, name in enumerate(product_order, start=2):
-            nc = ws.cell(row=i, column=1, value=name)
-            nc.font = Font(bold=True)
-            nc.alignment = center
-            nc.border = border
-            for j, d in enumerate(dates, start=2):
-                v = grid[name].get(d)
-                c = ws.cell(row=i, column=j, value=v)
-                c.number_format = number_fmt
-                c.alignment = right
-                c.border = border
+    def _metric_row(ws, row: int, label: str,
+                    values: dict[str, float | None], number_fmt: str,
+                    *, divide_by_100: bool = False,
+                    fill: PatternFill | None = None,
+                    label_font: Font | None = None) -> None:
+        nc = ws.cell(row=row, column=1, value=label)
+        nc.font = label_font or Font(bold=True)
+        if fill is not None:
+            nc.fill = fill
+        nc.alignment = center
+        nc.border = border
+        for j, d in enumerate(dates, start=2):
+            v = values.get(d)
+            if v is not None and divide_by_100:
+                v = v / 100.0
+            c = ws.cell(row=row, column=j, value=v)
+            c.number_format = number_fmt
+            if fill is not None:
+                c.fill = fill
+            c.alignment = right
+            c.border = border
 
     def _finalize(ws) -> None:
-        ws.column_dimensions["A"].width = 26
+        ws.column_dimensions["A"].width = 28
         for j in range(2, 2 + len(dates)):
             ws.column_dimensions[get_column_letter(j)].width = 12
         ws.freeze_panes = "B2"
 
-    bench_close = _bench_close(dates)
+    for name in product_order:
+        ws = wb.create_sheet(name)
+        _header(ws, name)
 
-    # Sheet 1: NAV + CSI 300 / CSI 500 closing points + 领航1号 cumulative excess
-    ws = wb.create_sheet("基金单位净值")
-    _header(ws)
-    _product_rows(ws, nav, "0.0000")
+        _metric_row(ws, 2, "基金单位净值", nav[name], "0.0000")
+        _metric_row(ws, 3, "今年以来收益率", ytd[name], "0.00%",
+                    divide_by_100=True)
+        _metric_row(ws, 4, "单日单位净值变动", daily[name], "0.000%",
+                    divide_by_100=True)
 
-    nav_base = len(product_order) + 2
-    for offset, (key, label) in enumerate((("CSI300", "沪深300"),
-                                           ("CSI500", "中证500"))):
-        r = nav_base + offset
-        nc = ws.cell(row=r, column=1, value=f"{label} (收盘点位)")
-        nc.font = bench_font
-        nc.fill = bench_fill
-        nc.alignment = center
-        nc.border = border
-        for j, d in enumerate(dates, start=2):
-            v = bench_close[key].get(d)
-            c = ws.cell(row=r, column=j, value=v)
-            c.number_format = "0.00"
-            c.fill = bench_fill
-            c.alignment = right
-            c.border = border
+        if name == "领航1号":
+            _metric_row(ws, 5, "沪深300 (收盘点位)", bench_close["CSI300"],
+                        "0.00", fill=bench_fill, label_font=bench_font)
+            _metric_row(ws, 6, "中证500 (收盘点位)", bench_close["CSI500"],
+                        "0.00", fill=bench_fill, label_font=bench_font)
 
-    # 领航1号 - 中证500 cumulative excess, as a LIVE Excel formula so the
-    # cells (and the embedded chart) recompute if any NAV/close is edited.
-    cs_row = nav_base + 1                       # 中证500 (收盘点位)
-    cum_row = nav_base + 2
-    nc = ws.cell(row=cum_row, column=1, value="领航1号 - 中证500 累计超额")
-    nc.font = excess_font
-    nc.fill = excess_fill
-    nc.alignment = center
-    nc.border = border
-    lh_row = (2 + product_order.index("领航1号")
-              if "领航1号" in product_order else None)
-    b = get_column_letter(2)                    # first-date (baseline) column
-    for j, d in enumerate(dates, start=2):
-        col = get_column_letter(j)
-        if lh_row is not None:
-            # (领航1号_j/领航1号_首日 - 1) - (中证500_j/中证500_首日 - 1)
-            f = (f"=({col}{lh_row}/${b}${lh_row}-1)"
-                 f"-({col}{cs_row}/${b}${cs_row}-1)")
-            c = ws.cell(row=cum_row, column=j, value=f)
-        else:
-            c = ws.cell(row=cum_row, column=j, value=None)
-        c.number_format = "0.00%"
-        c.fill = excess_fill
-        c.alignment = right
-        c.border = border
+            lh_row, cs_row, cum_row = 2, 6, 7
+            nc = ws.cell(row=cum_row, column=1,
+                         value="领航1号 - 中证500 累计超额")
+            nc.font = excess_font
+            nc.fill = excess_fill
+            nc.alignment = center
+            nc.border = border
+            b = get_column_letter(2)
+            for j, d in enumerate(dates, start=2):
+                col = get_column_letter(j)
+                f = (f"=({col}{lh_row}/${b}${lh_row}-1)"
+                     f"-({col}{cs_row}/${b}${cs_row}-1)")
+                c = ws.cell(row=cum_row, column=j, value=f)
+                c.number_format = "0.00%"
+                c.fill = excess_fill
+                c.alignment = right
+                c.border = border
 
-    # Formula caption (visible) + a note on the row label.
-    formula_text = ("累计超额 = (领航1号净值 ÷ 首日净值 − 1) "
-                    "− (中证500收盘 ÷ 首日收盘 − 1)；首日 = 0，单位：百分点")
-    cap = ws.cell(row=cum_row + 2, column=1, value=formula_text)
-    cap.font = Font(italic=True, color="9C0006")
-    ws.merge_cells(start_row=cum_row + 2, start_column=1,
-                   end_row=cum_row + 2, end_column=min(2 + len(dates), 12))
+            formula_text = ("累计超额 = (领航1号净值 ÷ 首日净值 − 1) "
+                            "− (中证500收盘 ÷ 首日收盘 − 1)；首日 = 0，单位：百分点")
+            cap = ws.cell(row=cum_row + 2, column=1, value=formula_text)
+            cap.font = Font(italic=True, color="9C0006")
+            ws.merge_cells(start_row=cum_row + 2, start_column=1,
+                           end_row=cum_row + 2,
+                           end_column=min(2 + len(dates), 12))
 
-    _finalize(ws)
+            if lh_chart_path is not None and Path(lh_chart_path).exists():
+                ws.add_image(XLImage(str(lh_chart_path)),
+                             f"A{cum_row + 4}")
 
-    # Embed the 领航1号 NAV-vs-excess chart as a PNG image so it renders
-    # in every spreadsheet viewer (native combined charts with a secondary
-    # axis are silently dropped by some Excel/preview engines).
-    if lh_chart_path is not None and Path(lh_chart_path).exists():
-        ws.add_image(XLImage(str(lh_chart_path)), f"A{cum_row + 4}")
+        _finalize(ws)
 
-    # Sheet 2: YTD (% format expects fractions); no benchmark rows here anymore
-    ws = wb.create_sheet("今年以来收益率")
-    _header(ws)
-    ytd_frac = {n: {d: (v / 100.0 if v is not None else None)
-                    for d, v in row.items()} for n, row in ytd.items()}
-    _product_rows(ws, ytd_frac, "0.00%")
-    _finalize(ws)
-
-    # Sheet 3: daily change + CSI 300 / CSI 500 daily + 领航1号 excess
-    ws = wb.create_sheet("单日单位净值变动")
-    _header(ws)
-    daily_frac = {n: {d: (v / 100.0 if v is not None else None)
-                      for d, v in row.items()} for n, row in daily.items()}
-    _product_rows(ws, daily_frac, "0.000%")
-
-    base_row = len(product_order) + 2
-    # CSI 300, CSI 500 rows
-    for offset, (key, label) in enumerate((("CSI300", "沪深300"),
-                                           ("CSI500", "中证500"))):
-        r = base_row + offset
-        nc = ws.cell(row=r, column=1, value=f"{label} (单日)")
-        nc.font = bench_font
-        nc.fill = bench_fill
-        nc.alignment = center
-        nc.border = border
-        for j, d in enumerate(dates, start=2):
-            v = bench_daily[key].get(d)
-            c = ws.cell(row=r, column=j,
-                        value=(v / 100.0 if v is not None else None))
-            c.number_format = "0.000%"
-            c.fill = bench_fill
-            c.alignment = right
-            c.border = border
-
-    # 领航1号 - CSI 500 excess return (daily)
-    excess_row = base_row + 2
-    nc = ws.cell(row=excess_row, column=1, value="领航1号 - 中证500 超额")
-    nc.font = excess_font
-    nc.fill = excess_fill
-    nc.alignment = center
-    nc.border = border
-    rj_daily = daily.get("领航1号", {})
-    for j, d in enumerate(dates, start=2):
-        rj = rj_daily.get(d)
-        b = bench_daily["CSI500"].get(d)
-        ex = (rj - b) if (rj is not None and b is not None) else None
-        c = ws.cell(row=excess_row, column=j,
-                    value=(ex / 100.0 if ex is not None else None))
-        c.number_format = "0.000%"
-        c.fill = excess_fill
-        c.alignment = right
-        c.border = border
-
-    _finalize(ws)
     wb.save(out_path)
 
 
