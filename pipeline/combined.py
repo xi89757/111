@@ -10,6 +10,8 @@ Reads per-day extractions (from samples/<YYYYMMDD>.json sidecars) and produces:
                        embedded comparison chart
   - <stem>_chart.png   line chart of YTD% across days, with CSI 300 / CSI 500
                        since-March-1 trajectories overlaid
+  - <stem>_returns.html  interactive page: pick any week / month, see each
+                       product's interval return
 
 Usage:
     python -m pipeline.combined 20260413 20260414 20260415 20260416 20260417
@@ -581,6 +583,196 @@ def _build_chart(out_path: Path, extractions: list[Extraction],
     plt.close(fig)
 
 
+_RETURNS_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>基金区间收益查询</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--line:#e3e6ea;--pos:#1a7f37;--neg:#c0392b;}
+*{box-sizing:border-box;}
+body{margin:0;padding:24px;background:var(--bg);color:#1c2733;
+ font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+h1{font-size:20px;margin:0 0 4px;}
+.sub{color:#6b7785;font-size:13px;margin-bottom:18px;}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+ padding:18px 20px;max-width:900px;}
+.controls{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;}
+.controls label{font-size:13px;color:#42505f;display:flex;flex-direction:column;gap:5px;}
+select{font-size:14px;padding:7px 10px;border:1px solid var(--line);border-radius:6px;
+ background:#fff;min-width:200px;}
+.meta{font-size:13px;color:#42505f;background:#f0f3f7;border-radius:6px;
+ padding:8px 12px;margin-bottom:14px;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:right;}
+th{color:#6b7785;font-weight:600;background:#fafbfc;}
+th:first-child,td:first-child{text-align:left;}
+td.name{font-weight:600;}
+tr.bench td.name{font-style:italic;color:#7a4f00;}
+.badge{font-size:11px;background:#fff2cc;color:#7a4f00;border-radius:4px;
+ padding:1px 6px;margin-left:6px;}
+.ret{font-weight:700;}
+.pos{color:var(--pos);} .neg{color:var(--neg);}
+.barrow{display:flex;width:200px;}
+.half{width:50%;height:14px;display:flex;}
+.half.left{justify-content:flex-end;}
+.half.right{justify-content:flex-start;border-left:1px solid #b9c2cc;}
+.fill{height:14px;border-radius:3px;}
+.fill.pos{background:var(--pos);} .fill.neg{background:var(--neg);}
+small.d{color:#94a0ad;font-weight:400;}
+</style>
+</head>
+<body>
+<h1>基金区间收益查询</h1>
+<div class="sub">数据区间 __RANGE__ ｜ 区间收益率 = 期末净值 ÷ 期初净值 − 1</div>
+<div class="card">
+  <div class="controls">
+    <label>统计粒度
+      <select id="granularity">
+        <option value="weekly">周度</option>
+        <option value="monthly">月度</option>
+      </select>
+    </label>
+    <label>选择区间
+      <select id="period"></select>
+    </label>
+  </div>
+  <div class="meta" id="meta"></div>
+  <table>
+    <thead><tr>
+      <th>产品</th><th>期初</th><th>期末</th><th>区间收益率</th><th>对比</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+<script>
+const D = __DATA__;
+const gSel = document.getElementById('granularity');
+const pSel = document.getElementById('period');
+const meta = document.getElementById('meta');
+const rows = document.getElementById('rows');
+
+function seriesOf(name){ return D.nav[name] || D.bench[name]; }
+function periodsFor(g){ return g === 'weekly' ? D.weekly : D.monthly; }
+
+function fillPeriods(){
+  const ps = periodsFor(gSel.value);
+  pSel.innerHTML = '';
+  ps.forEach((p, i) => {
+    const o = document.createElement('option');
+    o.value = i; o.textContent = p.label;
+    pSel.appendChild(o);
+  });
+  pSel.value = ps.length - 1;
+}
+
+function calc(name, period){
+  const s = seriesOf(name);
+  const ds = Object.keys(s).sort();
+  const inP = ds.filter(d => d >= period.start && d <= period.end);
+  if(!inP.length) return null;
+  const endD = inP[inP.length - 1];
+  const before = ds.filter(d => d < period.start);
+  const startD = before.length ? before[before.length - 1] : inP[0];
+  const sv = s[startD], ev = s[endD];
+  return { startD, endD, sv, ev, ret: (ev / sv - 1) * 100 };
+}
+
+function render(){
+  const period = periodsFor(gSel.value)[+pSel.value];
+  if(!period){ rows.innerHTML = ''; meta.textContent = ''; return; }
+  const all = D.products.concat(D.benchmarks);
+  let recs = all.map(n => ({ name:n, isB:D.benchmarks.includes(n),
+                             r:calc(n, period) }))
+                .filter(x => x.r);
+  recs.sort((a, b) => b.r.ret - a.r.ret);
+  const maxAbs = Math.max(0.01, ...recs.map(x => Math.abs(x.r.ret)));
+  meta.textContent = '区间 ' + period.start + ' ~ ' + period.end
+    + '　|　期初取区间前最近一个交易日（无则取区间首日）';
+  rows.innerHTML = recs.map(x => {
+    const r = x.r, cls = r.ret >= 0 ? 'pos' : 'neg';
+    const w = Math.abs(r.ret) / maxAbs * 100;
+    const bar = '<div class="barrow"><div class="half left">'
+      + (r.ret < 0 ? '<div class="fill neg" style="width:' + w + '%"></div>' : '')
+      + '</div><div class="half right">'
+      + (r.ret >= 0 ? '<div class="fill pos" style="width:' + w + '%"></div>' : '')
+      + '</div></div>';
+    return '<tr class="' + (x.isB ? 'bench' : '') + '">'
+      + '<td class="name">' + x.name
+      + (x.isB ? '<span class="badge">基准</span>' : '') + '</td>'
+      + '<td>' + r.sv.toFixed(4) + '<br><small class="d">' + r.startD + '</small></td>'
+      + '<td>' + r.ev.toFixed(4) + '<br><small class="d">' + r.endD + '</small></td>'
+      + '<td class="ret ' + cls + '">' + (r.ret >= 0 ? '+' : '')
+      + r.ret.toFixed(2) + '%</td>'
+      + '<td>' + bar + '</td></tr>';
+  }).join('');
+}
+
+gSel.addEventListener('change', () => { fillPeriods(); render(); });
+pSel.addEventListener('change', render);
+fillPeriods();
+render();
+</script>
+</body>
+</html>
+"""
+
+
+def _build_returns_html(out_path: Path, extractions: list[Extraction],
+                        product_order: list[str]) -> None:
+    """Self-contained HTML: pick any week / month, see each product's return."""
+    import datetime as _dt
+
+    dates = [e.date for e in extractions]
+    nav = _nav_grid(extractions, product_order)
+    bench_close = _bench_close(dates)
+
+    nav_data = {name: {d: v for d, v in nav[name].items() if v is not None}
+                for name in product_order}
+    bench_data = {
+        "沪深300": {d: v for d, v in bench_close["CSI300"].items()
+                   if v is not None},
+        "中证500": {d: v for d, v in bench_close["CSI500"].items()
+                   if v is not None},
+    }
+
+    weeks: dict[_dt.date, list[str]] = {}
+    for d in dates:
+        dd = _dt.date.fromisoformat(d)
+        monday = dd - _dt.timedelta(days=dd.weekday())
+        weeks.setdefault(monday, []).append(d)
+    weekly = []
+    for monday in sorted(weeks):
+        ds = sorted(weeks[monday])
+        sunday = monday + _dt.timedelta(days=6)
+        weekly.append({"label": f"{ds[0][5:]} ~ {ds[-1][5:]}",
+                       "start": monday.isoformat(),
+                       "end": sunday.isoformat()})
+
+    months: dict[str, list[str]] = {}
+    for d in dates:
+        months.setdefault(d[:7], []).append(d)
+    monthly = []
+    for ym in sorted(months):
+        year, mon = ym.split("-")
+        monthly.append({"label": f"{year}年{int(mon)}月",
+                        "start": f"{ym}-01", "end": f"{ym}-31"})
+
+    payload = {
+        "products": product_order,
+        "benchmarks": ["沪深300", "中证500"],
+        "nav": nav_data,
+        "bench": bench_data,
+        "weekly": weekly,
+        "monthly": monthly,
+    }
+    html = (_RETURNS_HTML_TEMPLATE
+            .replace("__RANGE__", f"{dates[0]} ~ {dates[-1]}")
+            .replace("__DATA__", json.dumps(payload, ensure_ascii=False)))
+    out_path.write_text(html, encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Multi-day combined report.")
     ap.add_argument("dates", nargs="*", help="YYYYMMDD list")
@@ -621,6 +813,7 @@ def main(argv: list[str] | None = None) -> int:
     daily_chart_path = args.out_dir / f"{stem}_daily_chart.png"
     nav_chart_path = args.out_dir / f"{stem}_nav_chart.png"
     lh_chart_path = args.out_dir / f"{stem}_lh_chart.png"
+    returns_html_path = args.out_dir / f"{stem}_returns.html"
 
     _write_markdown(md_path, extractions, bench_by_date, product_order)
     _write_csv(csv_path, extractions, bench_by_date)
@@ -630,13 +823,15 @@ def main(argv: list[str] | None = None) -> int:
     _build_chart(chart_path, extractions, bench_by_date, product_order)
     _build_daily_chart(daily_chart_path, extractions, product_order)
     _build_nav_chart(nav_chart_path, extractions, product_order)
+    _build_returns_html(returns_html_path, extractions, product_order)
 
     print(json.dumps({
         "dates": [e.date for e in extractions],
         "products": product_order,
         "outputs": [str(md_path), str(csv_path), str(xlsx_path),
                     str(chart_path), str(daily_chart_path),
-                    str(nav_chart_path), str(lh_chart_path)],
+                    str(nav_chart_path), str(lh_chart_path),
+                    str(returns_html_path)],
     }, ensure_ascii=False, indent=2))
     return 0
 
