@@ -1,0 +1,12 @@
+{
+  "date": "2026-04-23",
+  "products": [
+    {"name": "瑞享1号", "nav": 1.0793, "ytd_return_pct": 0.68,   "daily_change_pct": 0.005},
+    {"name": "瑞享3号", "nav": 0.7218, "ytd_return_pct": -11.89, "daily_change_pct": -3.92},
+    {"name": "配置1号", "nav": 1.0844, "ytd_return_pct": 1.51,   "daily_change_pct": -0.65},
+    {"name": "瑞臻1号", "nav": 1.4173, "ytd_return_pct": -8.58,  "daily_change_pct": -1.99},
+    {"name": "鑫盛1号", "nav": 1.1689, "ytd_return_pct": 14.65,  "daily_change_pct": -0.65},
+    {"name": "领航1号", "nav": 1.0609, "ytd_return_pct": 6.09,   "daily_change_pct": -1.97},
+    {"name": "锐进1号", "nav": 1.0081, "ytd_return_pct": 0.80,   "daily_change_pct": -0.57}
+  ]
+}
